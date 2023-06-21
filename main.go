@@ -11,23 +11,21 @@ import (
 
 /*
 #include <stdlib.h>
-typedef struct string_arr {
+typedef struct str_arr{
 	char **arr;
-	int str_size;
-} string_arr;
+	int s_size;
+} str_arr;
 
-typedef struct string_arr2 {
-	char **arr;
-	int *row_sizes;
-	int rows;
-} string_arr2;
+typedef struct str_arr2 {
+	str_arr **arr;
+	int s_size;
+} str_arr2;
 
 typedef struct cus_obj {
 	void *obj;
-	uint32 typ;
-} cus_obj
+	int typ;
+} cus_obj;
 */
-
 import "C"
 
 var files map[uint32]*excelize.File
@@ -75,20 +73,10 @@ func openFile(filePath *C.char) uint32 {
 }
 
 //export getSheetList
-func getSheetList(fileId uint32) *C.struct_string_arr {
+func getSheetList(fileId uint32) *C.struct_str_arr {
 	f := getFile(fileId)
 	names := f.GetSheetList()
-	cArray := C.malloc(C.size_t(len(names)) * C.size_t(unsafe.Sizeof(uintptr(0))))
-
-	a := (*[1<<30 - 1]*C.char)(cArray)
-
-	for i, name := range names {
-		a[i] = C.CString(name)
-	}
-	result := (*C.struct_string_arr)(C.malloc(C.size_t(unsafe.Sizeof(C.struct_string_arr{}))))
-	result.arr = (**C.char)(cArray)
-	result.str_size = C.int(len(names))
-	return result
+	return fromGo2Arrs(names)
 }
 
 //export getSheetName
@@ -109,7 +97,7 @@ func closeFile(fileId uint32) {
 func setSheetVisible(fileId uint32, sheetNameC *C.char, visible C.int) {
 	f := getFile(fileId)
 	sheetName := C.GoString(sheetNameC)
-	defer C.free(unsafe.Pointer(sheetNameC))
+	// defer C.free(unsafe.Pointer(sheetNameC))
 	f.SetSheetVisible(sheetName, int(visible) == 1)
 }
 
@@ -117,7 +105,7 @@ func setSheetVisible(fileId uint32, sheetNameC *C.char, visible C.int) {
 func deleteSheet(fileId uint32, sheetNameC *C.char) {
 	f := getFile(fileId)
 	sheetName := C.GoString(sheetNameC)
-	defer C.free(unsafe.Pointer(sheetNameC))
+	// defer C.free(unsafe.Pointer(sheetNameC))
 	f.DeleteSheet(sheetName)
 }
 
@@ -144,7 +132,6 @@ func setCellValue(fileId uint32, sheetNameC *C.char, row C.int, col C.int, value
 func getCellValue(fileId uint32, sheetNameC *C.char, row C.int, col C.int) *C.char {
 	f := getFile(fileId)
 	sheetName := C.GoString(sheetNameC)
-	fmt.Println(fileId)
 	cell, _ := excelize.CoordinatesToCellName(int(col), int(row))
 	// defer C.free(unsafe.Pointer(sheetNameC))
 	val, _ := f.GetCellValue(sheetName, cell)
@@ -155,38 +142,40 @@ func getCellValue(fileId uint32, sheetNameC *C.char, row C.int, col C.int) *C.ch
 }
 
 //export getRows
-func getRows(fileId uint32, sheetNameC *C.char) *C.struct_string_arr2 {
+func getRows(fileId uint32, sheetNameC *C.char) *C.struct_str_arr2 {
 	f := getFile(fileId)
 	sheetName := C.GoString(sheetNameC)
 	rows, _ := f.GetRows(sheetName)
 	// defer C.free(unsafe.Pointer(sheetNameC))
-	var allCount int
-	for _, row := range rows {
-		allCount += len(row)
-	}
-	cArray := C.malloc(C.size_t(allCount) * C.size_t(unsafe.Sizeof(uintptr(0))))
-	rowSizes := (*C.int)(C.malloc(C.size_t(len(rows)) * C.size_t(unsafe.Sizeof(C.int(0)))))
-	a := (*[1<<30 - 1]*C.char)(cArray)
-	// b := (*[1<<30 - 1]C.int)(rowSizes)
-	i := 0
-	for rowIndex, row := range rows {
-		(*[1<<30 - 1]C.int)(unsafe.Pointer(rowSizes))[rowIndex] = C.int(len(row))
-		for _, str := range row {
-			a[i] = C.CString(str)
-			i += 1
-		}
-	}
-	result := (*C.struct_string_arr2)(C.malloc(C.size_t(unsafe.Sizeof(C.struct_string_arr2{}))))
-	result.arr = (**C.char)(cArray)
-	result.rows = C.int(len(rows))
-	result.row_sizes = (*C.int)(rowSizes)
-	return result
+	return fromGo2Arrs2(rows)
 }
 
-func putRows(fileId uint32, sheetNameC *C.char, *C.struct_string_arr) {
+//export putRows
+func putRows(fileId uint32, sheetNameC *C.char, rowsC *C.struct_str_arr2) {
 	f := getFile(fileId)
 	sheetName := C.GoString(sheetNameC)
+	vRows := (*[2 << 32]*C.struct_str_arr)(unsafe.Pointer(rowsC.arr))
+	for i := 0; i < int(rowsC.s_size); i++ {
+		row := fromArr2Go(vRows[i])
+		innerPutRow(f, sheetName, i, row)
+	}
 
+}
+
+//export putRow
+func putRow(fileId uint32, sheetNameC *C.char, rowIndex int, rowC *C.struct_str_arr) {
+	f := getFile(fileId)
+	sheetName := C.GoString(sheetNameC)
+	row := fromArr2Go(rowC)
+	fmt.Printf("%v\n", len(row))
+	innerPutRow(f, sheetName, rowIndex, row)
+}
+
+func innerPutRow(f *excelize.File, sheetName string, rowIndex int, row []string) {
+	for i := 0; i < len(row); i++ {
+		cell, _ := excelize.CoordinatesToCellName(i+1, rowIndex+1)
+		f.SetCellStr(sheetName, cell, row[i])
+	}
 }
 
 //export save
@@ -215,19 +204,40 @@ func saveAs(fileId uint32, path *C.char) {
 // 	free(ptr);
 // }
 
-//export freeStringArr2
-func freeStringArr2(ptr *C.struct_string_arr2) {
-	var index int
-	arrPtrs := (*[1<<30 - 1]*C.char)(unsafe.Pointer(ptr.arr))
-	for i := 0; i < int(ptr.rows); i++ {
-		for j := 0; j < int((*[1<<30 - 1]C.int)(unsafe.Pointer(ptr.row_sizes))[i]); j++ {
-			C.free(unsafe.Pointer(arrPtrs[index]))
-			index += 1
-		}
+func fromGo2Arrs(strs []string) *C.struct_str_arr {
+	var arr = (*C.struct_str_arr)(C.malloc(C.size_t(unsafe.Sizeof(C.struct_str_arr{}))))
+	arr.s_size = C.int(len(strs))
+
+	var ss = C.malloc(C.size_t(arr.s_size) * C.size_t(unsafe.Sizeof(uintptr(0))))
+
+	var arrSs = (*[2 << 32]*C.char)(unsafe.Pointer(ss))
+	for i, s := range strs {
+		arrSs[i] = C.CString(s)
 	}
-	C.free(unsafe.Pointer(ptr.arr))
-	C.free(unsafe.Pointer(ptr.row_sizes))
-	C.free(unsafe.Pointer(ptr))
+	arr.arr = (**C.char)(ss)
+	return arr
+}
+
+func fromGo2Arrs2(strs [][]string) *C.struct_str_arr2 {
+	var arr2 = (*C.struct_str_arr2)(C.malloc(C.size_t(unsafe.Sizeof(C.struct_str_arr2{}))))
+	arr2.s_size = C.int(len(strs))
+	var ss = C.malloc(C.size_t(arr2.s_size) * C.size_t(unsafe.Sizeof(uintptr(0))))
+	var arrSs = (*[2 << 32]*C.struct_str_arr)(unsafe.Pointer(ss))
+
+	for i, _strs := range strs {
+		arrSs[i] = fromGo2Arrs(_strs)
+	}
+	arr2.arr = (**C.struct_str_arr)(ss)
+	return arr2
+}
+
+func fromArr2Go(rowC *C.struct_str_arr) []string {
+	vRow := (*[2 << 32]*C.char)(unsafe.Pointer(rowC.arr))
+	row := make([]string, 0, int(rowC.s_size))
+	for ii := 0; ii < int(rowC.s_size); ii++ {
+		row = append(row, C.GoString(vRow[ii]))
+	}
+	return row
 }
 
 func fuuid() uint32 {

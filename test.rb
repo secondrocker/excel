@@ -2,42 +2,26 @@ require 'ffi'
 require 'byebug'
 class CStrArray  < FFI::Struct
   layout :arr, :pointer,
-         :str_size, :int
+         :s_size, :int
   
-  def values
-    self[:arr].read_array_of_pointer(self[:str_size]).map { |str_ptr| str_ptr.read_string }
-  end
-
-  def free
-    LibC.free(self[:arr])
+  def value
+    self[:arr].read_array_of_pointer(self[:s_size]).map do |str_ptr| 
+      str = str_ptr.read_string
+      # str_ptr.free
+      str
+    end
   end
 end
 
 class CStrArray2 < FFI::Struct
   layout :arr, :pointer,
-         :row_sizes, :pointer,
-         :rows,:int
-
-  def values
-    sizes = self[:row_sizes].read_array_of_int(self[:rows])
-    LibC.free(self[:row_sizes])
-    strs = self[:arr].read_array_of_pointer(sizes.sum).map do |str_ptr|
-      str = str_ptr.read_string
-      LibC.free(str_ptr)
-      str
+         :s_size, :int
+  def value
+    self[:arr].read_array_of_pointer(self[:s_size]).map do |p|
+      strs = CStrArray.new(p).value
+      # p.free
+      strs
     end
-    index = 0
-    rows = []
-    sizes.each do |str_size|
-      rows.push(strs[index..index+str_size-1])
-      index += str_size
-    end
-    rows
-  end
-
-  def free
-    LibC.free(self[:arr])
-    XlsxExt.freeStringArr2(self)
   end
 end
 
@@ -56,12 +40,14 @@ module XlsxExt
   attach_function :getCellValue, [:uint32, :string, :int, :int], :string
 
   attach_function :getRows, [:uint32, :string], CStrArray2.ptr
+  
+  attach_function :putRow, [:uint32, :string, :int, CStrArray.ptr], :void
+  attach_function :putRows, [:uint32, :string, CStrArray2.ptr], :void
 
   attach_function :save, [:uint32], :void
   attach_function :saveAs, [:uint32, :string], :void
 
   attach_function :closeFile, [:uint32], :void
-  attach_function :freeStringArr2, [:pointer], :void
   
 end
 
@@ -71,23 +57,22 @@ class Xlsx
   def self.new_file
     instance = Xlsx.new
     instance.id = XlsxExt.newFile()
-    return instance
+    instance
   end
 
   def self.open_file(path)
     instance = Xlsx.new
     instance.id = XlsxExt.openFile(path)
-    return instance
+    instance
   end
 
   def get_sheet_list
-    
     ptr =  XlsxExt.getSheetList(self.id)
-    return ptr.values
+    ptr.value
   end
 
   def get_sheet_name(index)
-    return XlsxExt.getSheetName(self.id, index)
+    XlsxExt.getSheetName(self.id, index)
   end
 
 
@@ -105,7 +90,7 @@ class Xlsx
       3
     end
     XlsxExt.setCellValue(self.id, sheet_name, row, col, ptr, typ)
-    LibC.free(ptr)
+    ptr.free
   end
 
   def get_cell_value(sheet_name, row, col)
@@ -113,7 +98,45 @@ class Xlsx
   end
 
   def get_rows(sheet_name)
-    XlsxExt.getRows(self.id, sheet_name).values
+    XlsxExt.getRows(self.id, sheet_name).value
+  end
+
+  def put_row(sheet_name, row_index, row)
+    str = CStrArray.new
+    str[:s_size] = row.size
+    ptr = FFI::MemoryPointer.new(:pointer, row.size)
+    pps = row.map{|x| FFI::MemoryPointer.from_string(x.to_s) }
+    ptr.write_array_of_pointer(pps)
+    str[:arr] = ptr
+    XlsxExt.putRow(self.id, sheet_name, row_index,str)
+    pps.each(&:free)
+    ptr.free
+    # str.free
+  end
+
+  def put_rows(sheet_name, rows)
+    str2 = CStrArray2.new
+    str2[:s_size] = rows.size
+    ptr2 = FFI::MemoryPointer.new(:pointer, rows.size)
+    todoRelease = [ptr2]
+    
+    ptr2_arr = rows.map do |row|
+      str = CStrArray.new
+      str[:s_size] = row.size
+
+      ptr = FFI::MemoryPointer.new(:pointer, row.size)
+      todoRelease << ptr
+      sptrs = row.map{|s| FFI::MemoryPointer.from_string(s.to_s)}
+      todoRelease += sptrs
+      ptr.write_array_of_pointer(sptrs)
+      str[:arr] = ptr
+      str.pointer
+    end
+    todoRelease += ptr2_arr
+    ptr2.write_array_of_pointer(ptr2_arr)
+    str2[:arr] = ptr2
+    XlsxExt.putRows(self.id, sheet_name, str2)
+    todoRelease.each(&:free)
   end
 
   def save
@@ -176,12 +199,14 @@ end # module LibC
 
 
 
-
 while true do
   path2 = "/Users/wangdong/Desktop/信息价网址页面.xlsx"
   puts path2
   f2 = Xlsx.open_file(path2)
   puts f2.get_rows('Sheet1')
+
+  f2.put_row('Sheet1',5,[5,'b','c'])
+  f2.put_rows('Sheet1',[[2,nil],[1,'b','c']])
+  f2.save
   f2.close
-  GC.start
 end
